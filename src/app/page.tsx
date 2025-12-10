@@ -34,7 +34,7 @@ export default function Home() {
 
           <h1 className="sr-only">BLACKBIRD</h1>
           
-          <p className="text-amber-400 text-xl font-medium tracking-[0.3em] uppercase -mt-52 mb-10 pointer-events-none">
+          <p className="text-amber-400 text-xl font-medium tracking-[0.3em] uppercase -mt-72 sm:-mt-60 md:-mt-52 mb-10 pointer-events-none">
             Maitland, Florida
           </p>
 

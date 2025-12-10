@@ -27,14 +27,14 @@ export default function Home() {
               alt="Blackbird Comics & Coffeehouse"
               width={1200}
               height={960}
-              className="mx-auto w-auto h-[280px] sm:h-[450px] md:h-[600px] lg:h-[700px] invert"
+              className="mx-auto w-auto h-[220px] sm:h-[400px] md:h-[550px] lg:h-[650px] invert"
               priority
             />
           </div>
 
           <h1 className="sr-only">BLACKBIRD</h1>
           
-          <p className="text-amber-400 text-lg sm:text-xl font-medium tracking-[0.3em] uppercase -mt-24 sm:-mt-36 md:-mt-44 mb-8 sm:mb-10 pointer-events-none">
+          <p className="text-amber-400 text-lg sm:text-xl font-medium tracking-[0.3em] uppercase -mt-16 sm:-mt-32 md:-mt-40 mb-6 sm:mb-10 pointer-events-none">
             Maitland, Florida
           </p>
 

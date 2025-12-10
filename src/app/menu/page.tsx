@@ -42,6 +42,7 @@ export default function MenuPage() {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
+  const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   
   const cartItems = useCartStore((s) => s.items);
   const cartTotal = useCartStore((s) => s.getTotal());
@@ -222,28 +223,20 @@ export default function MenuPage() {
 
             {/* Main Content */}
             <div className="flex-1 min-w-0">
-              {/* Mobile Category Selector */}
-              <div className="lg:hidden mb-4">
-                <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-                  {categories.map((category) => {
-                    const count = products.filter(p => p.category_id === category.id).length;
-                    if (count === 0) return null; // Hide empty categories
-                    return (
-                      <button
-                        key={category.id}
-                        onClick={() => setActiveCategory(category.id)}
-                        className={cn(
-                          'px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors',
-                          activeCategory === category.id
-                            ? 'bg-stone-900 text-white'
-                            : 'bg-white text-stone-600 hover:bg-stone-100 border border-stone-200'
-                        )}
-                      >
-                        {category.name}
-                      </button>
-                    );
-                  })}
-                </div>
+              {/* Mobile Filter Button + Info */}
+              <div className="flex items-center justify-between mb-4 gap-4 lg:hidden">
+                <button
+                  onClick={() => setMobileFilterOpen(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-stone-200 rounded-lg text-sm font-medium text-stone-700 hover:bg-stone-50"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+                  </svg>
+                  Categories
+                </button>
+                <p className="text-sm text-stone-500">
+                  <span className="font-semibold text-stone-900">{filteredProducts.length}</span> items
+                </p>
               </div>
 
               {/* Category Header */}
@@ -292,6 +285,56 @@ export default function MenuPage() {
             </span>
             <span className="font-semibold">{formatPrice(cartTotal)}</span>
           </button>
+        </div>
+      )}
+
+      {/* Mobile Filter Drawer */}
+      {mobileFilterOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setMobileFilterOpen(false)} />
+          <div className="absolute left-0 top-0 bottom-0 w-80 max-w-[85vw] bg-white shadow-xl">
+            <div className="flex items-center justify-between p-4 border-b border-stone-200">
+              <h2 className="font-semibold text-stone-900">Categories</h2>
+              <button onClick={() => setMobileFilterOpen(false)} className="p-2 hover:bg-stone-100 rounded-lg">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto h-[calc(100%-60px)]">
+              <div className="space-y-1">
+                {categories.map((category) => {
+                  const count = products.filter(p => p.category_id === category.id).length;
+                  if (count === 0) return null;
+                  return (
+                    <button
+                      key={category.id}
+                      onClick={() => {
+                        setActiveCategory(category.id);
+                        setMobileFilterOpen(false);
+                      }}
+                      className={cn(
+                        'w-full flex items-center justify-between px-3 py-3 rounded-lg text-sm transition-colors',
+                        activeCategory === category.id
+                          ? 'bg-amber-100 text-amber-800 font-medium'
+                          : 'text-stone-600 hover:bg-stone-100'
+                      )}
+                    >
+                      <span>{category.name}</span>
+                      <span className={cn(
+                        'text-xs px-2 py-0.5 rounded-full',
+                        activeCategory === category.id
+                          ? 'bg-amber-200 text-amber-800'
+                          : 'bg-stone-100 text-stone-500'
+                      )}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

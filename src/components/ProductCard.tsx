@@ -35,8 +35,9 @@ export function ProductCard({ product, onClick }: ProductCardProps) {
             src={product.image_url!}
             alt={product.name}
             fill
+            loading="eager"
             className="object-cover group-hover:scale-105 transition-transform duration-300"
-            sizes="300px"
+            sizes="(max-width: 640px) 50vw, 300px"
           />
         ) : (
           <svg className="w-10 h-10 text-stone-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">

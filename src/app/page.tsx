@@ -63,16 +63,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Quote Section */}
-      <section className="py-20 px-6 bg-stone-900/50">
-        <div className="max-w-3xl mx-auto text-center">
-          <blockquote className="text-2xl sm:text-3xl text-amber-100/80 font-light italic leading-relaxed">
-            "Come for the coffee, stay for the comics—or come for the comics and stay for the coffee!"
-          </blockquote>
-          <div className="mt-6 w-16 h-px bg-amber-500/50 mx-auto" />
-        </div>
-      </section>
-
       {/* Two Worlds Section */}
       <section className="py-16 px-6">
         <div className="max-w-6xl mx-auto grid md:grid-cols-2 gap-6">

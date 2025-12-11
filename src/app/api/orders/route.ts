@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
   try {
     // Rate limiting
     const clientIP = getClientIP(request);
-    const rateLimitResult = checkRateLimit(`orders:${clientIP}`, RATE_LIMITS.orders);
+    const rateLimitResult = await checkRateLimit(`orders:${clientIP}`, RATE_LIMITS.orders);
     
     if (!rateLimitResult.success) {
       console.warn(`Rate limit exceeded for orders: ${clientIP}`);

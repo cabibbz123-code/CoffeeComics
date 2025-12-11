@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Header } from '@/components/Header';
 import { Footer } from '@/components/Footer';
 import { CartDrawer } from '@/components/CartDrawer';
@@ -8,6 +8,7 @@ import { useCartStore } from '@/lib/cart';
 import { getSupabase } from '@/lib/supabase';
 import { formatPrice, cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 interface Comic {
   id: string;
@@ -127,29 +128,73 @@ function FilterSidebar({
   );
 }
 
+// Comic card component for virtual list
+function ComicCard({ comic, onAddToCart }: { comic: Comic; onAddToCart: (comic: Comic) => void }) {
+  return (
+    <div className="bg-white rounded-xl overflow-hidden border border-stone-100 hover:shadow-lg hover:border-stone-200 transition-all group h-full">
+      <div className="aspect-[2/3] bg-stone-100 relative overflow-hidden">
+        {comic.image_url ? (
+          <img src={comic.image_url} alt={comic.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" loading="lazy" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <svg className="w-12 h-12 text-stone-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+            </svg>
+          </div>
+        )}
+        {comic.badge && (
+          <span className={cn(
+            'absolute top-2 left-2 text-xs font-bold px-2 py-1 rounded shadow-sm',
+            comic.badge === 'New' || comic.badge === 'New Release' || comic.badge === 'New This Week'
+              ? 'bg-green-500 text-white'
+              : comic.badge === 'Staff Pick' || comic.badge === 'Recommended'
+              ? 'bg-purple-500 text-white'
+              : comic.badge === 'Rare' || comic.badge === 'Limited'
+              ? 'bg-red-500 text-white'
+              : comic.badge === 'Sale'
+              ? 'bg-blue-500 text-white'
+              : 'bg-amber-500 text-stone-900'
+          )}>
+            {comic.badge}
+          </span>
+        )}
+      </div>
+      <div className="p-3">
+        <h3 className="font-semibold text-stone-900 text-sm line-clamp-2 mb-1 min-h-[2.5rem]">{comic.name}</h3>
+        {comic.publisher && <p className="text-xs text-stone-500 mb-2 truncate">{comic.publisher}</p>}
+        <div className="flex items-center justify-between">
+          <span className="font-bold text-stone-900">{formatPrice(comic.base_price)}</span>
+          <button
+            onClick={() => onAddToCart(comic)}
+            className="bg-stone-900 text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-stone-800 active:scale-95 transition-all"
+          >
+            Add
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ComicsPage() {
   const [comics, setComics] = useState<Comic[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
-  const [page, setPage] = useState(0);
-  const PAGE_SIZE = 24;
   const [filter, setFilter] = useState('all');
   const [sortBy, setSortBy] = useState<SortOption>('featured');
   const [cartOpen, setCartOpen] = useState(false);
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [publisherSearch, setPublisherSearch] = useState('');
-  const [totalCount, setTotalCount] = useState(0);
   const sortDropdownRef = useRef<HTMLDivElement>(null);
-  const loadMoreRef = useRef<HTMLDivElement>(null);
+  const parentRef = useRef<HTMLDivElement>(null);
   
   const addItem = useCartStore((s) => s.addItem);
   const cartItems = useCartStore((s) => s.items);
   const cartTotal = useCartStore((s) => s.getTotal());
 
+  // Load ALL comics at once
   useEffect(() => {
-    loadComics(true);
+    loadAllComics();
   }, []);
 
   useEffect(() => {
@@ -162,84 +207,26 @@ export default function ComicsPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Intersection Observer for infinite scroll
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && hasMore && !loadingMore && !loading) {
-          loadMoreComics();
-        }
-      },
-      { threshold: 0.1 }
-    );
-
-    if (loadMoreRef.current) {
-      observer.observe(loadMoreRef.current);
-    }
-
-    return () => observer.disconnect();
-  }, [hasMore, loadingMore, loading, comics.length]);
-
-  const loadComics = async (reset = false) => {
-    if (reset) {
-      setLoading(true);
-      setPage(0);
-    }
-    
+  const loadAllComics = async () => {
+    setLoading(true);
     const supabase = getSupabase();
     
-    // Get total count first
-    const { count } = await supabase
-      .from('products')
-      .select('*', { count: 'exact', head: true })
-      .eq('product_type', 'comic')
-      .eq('is_active', true)
-      .eq('in_stock', true);
-    
-    setTotalCount(count || 0);
-    
-    // Get first page
-    const { data } = await supabase
+    // Load all comics at once
+    const { data, error } = await supabase
       .from('products')
       .select('id, name, description, base_price, badge, publisher, image_url, created_at')
       .eq('product_type', 'comic')
       .eq('is_active', true)
       .eq('in_stock', true)
-      .order('display_order')
-      .range(0, PAGE_SIZE - 1);
+      .order('display_order');
 
     if (data) {
       setComics(data);
-      setHasMore(data.length === PAGE_SIZE);
-      setPage(1);
+    }
+    if (error) {
+      console.error('Error loading comics:', error);
     }
     setLoading(false);
-  };
-
-  const loadMoreComics = async () => {
-    if (loadingMore || !hasMore) return;
-    
-    setLoadingMore(true);
-    const supabase = getSupabase();
-    
-    const from = page * PAGE_SIZE;
-    const to = from + PAGE_SIZE - 1;
-    
-    const { data } = await supabase
-      .from('products')
-      .select('id, name, description, base_price, badge, publisher, image_url, created_at')
-      .eq('product_type', 'comic')
-      .eq('is_active', true)
-      .eq('in_stock', true)
-      .order('display_order')
-      .range(from, to);
-
-    if (data) {
-      setComics(prev => [...prev, ...data]);
-      setHasMore(data.length === PAGE_SIZE);
-      setPage(prev => prev + 1);
-    }
-    setLoadingMore(false);
   };
 
   // Get unique publishers with counts, sorted by count
@@ -275,22 +262,61 @@ export default function ComicsPage() {
     }
   });
 
+  // Determine number of columns based on container width
+  const [columns, setColumns] = useState(4);
+  
+  useEffect(() => {
+    const updateColumns = () => {
+      const width = parentRef.current?.offsetWidth || window.innerWidth;
+      if (width < 640) setColumns(2);
+      else if (width < 1280) setColumns(3);
+      else setColumns(4);
+    };
+    
+    updateColumns();
+    window.addEventListener('resize', updateColumns);
+    return () => window.removeEventListener('resize', updateColumns);
+  }, []);
+
+  // Calculate rows for virtualizer
+  const rowCount = Math.ceil(sortedComics.length / columns);
+  
+  const rowVirtualizer = useVirtualizer({
+    count: rowCount,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 380, // Estimated row height
+    overscan: 3, // Render 3 extra rows above/below viewport
+  });
+
   const handleAddToCart = (comic: Comic) => {
     addItem(
       { 
-        id: comic.id, name: comic.name, category_id: '', description: comic.description,
-        product_type: 'comic', base_price: comic.base_price, publisher: comic.publisher,
-        sku: null, in_stock: true, image_url: comic.image_url, badge: comic.badge,
-        display_order: 0, notes: null, is_active: true, is_featured: false,
+        id: comic.id, 
+        category_id: '',
+        name: comic.name, 
+        description: comic.description || '',
+        product_type: 'comic',
+        base_price: comic.base_price,
+        publisher: comic.publisher,
+        sku: null,
+        in_stock: true,
+        image_url: comic.image_url,
+        badge: comic.badge,
+        display_order: 0,
+        notes: null,
+        is_active: true,
+        is_featured: false,
       },
-      { id: `${comic.id}-standard`, product_id: comic.id, name: 'Standard', 
-        price: comic.base_price, display_order: 0, is_default: true },
-      [], 1
+      { id: `${comic.id}-standard`, product_id: comic.id, name: 'Standard', price: comic.base_price, display_order: 0, is_default: true },
+      [],
+      1
     );
-    toast.success(`Added to cart`);
+    toast.success(`Added ${comic.name} to cart`);
   };
 
-  const sortOptions: { value: SortOption; label: string }[] = [
+  const newReleasesCount = comics.filter(c => c.badge === 'New').length;
+
+  const sortOptions = [
     { value: 'featured', label: 'Featured' },
     { value: 'newest', label: 'Newest' },
     { value: 'price-low', label: 'Price: Low to High' },
@@ -299,117 +325,75 @@ export default function ComicsPage() {
     { value: 'name-za', label: 'Name: Z to A' },
   ];
 
-  const newReleasesCount = comics.filter(c => c.badge === 'New').length;
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex flex-col bg-stone-50">
-        <Header />
-        <main className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <div className="w-8 h-8 border-4 border-stone-300 border-t-amber-500 rounded-full animate-spin mx-auto mb-4" />
-            <p className="text-stone-500">Loading comics...</p>
-          </div>
-        </main>
-        <Footer />
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen flex flex-col bg-stone-50">
+    <div className="min-h-screen bg-stone-50 flex flex-col">
       <Header />
 
-      <main className="flex-1">
-        <div className="bg-stone-900 text-white py-10">
-          <div className="max-w-6xl mx-auto px-4 text-center">
-            <h1 className="text-3xl font-bold mb-2">Comics & Graphic Novels</h1>
-            <p className="text-stone-400 text-sm">New releases, back issues & more</p>
+      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-6 pb-24">
+        {loading ? (
+          <div className="flex items-center justify-center min-h-[50vh]">
+            <div className="text-center">
+              <div className="w-10 h-10 border-4 border-stone-200 border-t-amber-500 rounded-full animate-spin mx-auto mb-4" />
+              <p className="text-stone-500">Loading comics...</p>
+            </div>
           </div>
-        </div>
-
-        <div className="max-w-6xl mx-auto px-4 py-6">
+        ) : (
           <div className="flex gap-6">
+            {/* Desktop Sidebar */}
             <aside className="hidden lg:block w-64 flex-shrink-0">
-              <div className="bg-white rounded-xl border border-stone-200 p-4">
-                <h2 className="font-semibold text-stone-900 mb-4 flex items-center gap-2">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-                  </svg>
-                  Filter
-                </h2>
-                <FilterSidebar
-                  publisherSearch={publisherSearch}
-                  setPublisherSearch={setPublisherSearch}
-                  filter={filter}
-                  setFilter={setFilter}
-                  comics={comics}
-                  publishers={publishers}
-                  filteredPublishers={filteredPublishers}
-                  newReleasesCount={newReleasesCount}
-                />
-              </div>
+              <FilterSidebar
+                publisherSearch={publisherSearch}
+                setPublisherSearch={setPublisherSearch}
+                filter={filter}
+                setFilter={setFilter}
+                comics={comics}
+                publishers={publishers}
+                filteredPublishers={filteredPublishers}
+                newReleasesCount={newReleasesCount}
+              />
             </aside>
 
+            {/* Main Content */}
             <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between mb-4 gap-4">
-                <button
-                  onClick={() => setMobileFilterOpen(true)}
-                  className="lg:hidden flex items-center gap-2 px-4 py-2 bg-white border border-stone-200 rounded-lg text-sm font-medium text-stone-700 hover:bg-stone-50"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-                  </svg>
-                  Filter
-                  {filter !== 'all' && (
-                    <span className="bg-amber-500 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">1</span>
-                  )}
-                </button>
-
-                <p className="text-sm text-stone-500 hidden sm:block">
-                  <span className="font-semibold text-stone-900">{sortedComics.length}</span>
-                  {totalCount > sortedComics.length && <span> of {totalCount}</span>} comics
-                  {filter !== 'all' && filter !== 'new' && (
-                    <span className="ml-1">from <span className="font-medium text-stone-700">{filter}</span></span>
-                  )}
-                  {filter === 'new' && <span className="ml-1 text-amber-600 font-medium">• New Releases</span>}
-                </p>
-
-                <div className="flex items-center gap-2 ml-auto">
-                  {filter !== 'all' && (
-                    <button
-                      onClick={() => setFilter('all')}
-                      className="text-sm text-stone-500 hover:text-stone-700 flex items-center gap-1"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                      Clear
-                    </button>
-                  )}
-
-                  <div className="relative" ref={sortDropdownRef}>
+              {/* Header Row */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setMobileFilterOpen(true)}
+                    className="lg:hidden flex items-center gap-2 px-3 py-2 bg-white border border-stone-200 rounded-lg text-sm font-medium text-stone-700 hover:bg-stone-50"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                    </svg>
+                    Filter
+                  </button>
+                  <h1 className="text-lg font-semibold text-stone-900">
+                    {filter === 'all' ? 'All Comics' : filter === 'new' ? 'New Releases' : filter}
+                    <span className="text-stone-400 font-normal ml-2">({sortedComics.length})</span>
+                  </h1>
+                </div>
+                
+                <div className="flex items-center gap-3">
+                  {/* Sort Dropdown */}
+                  <div ref={sortDropdownRef} className="relative">
                     <button
                       onClick={() => setSortDropdownOpen(!sortDropdownOpen)}
-                      className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-stone-700 bg-white border border-stone-200 rounded-lg hover:bg-stone-50 transition-colors"
+                      className="flex items-center gap-2 px-3 py-2 bg-white border border-stone-200 rounded-lg text-sm font-medium text-stone-700 hover:bg-stone-50"
                     >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12" />
-                      </svg>
-                      <span className="hidden sm:inline">{sortOptions.find(o => o.value === sortBy)?.label}</span>
-                      <svg className={cn("w-4 h-4 transition-transform", sortDropdownOpen && "rotate-180")} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <span className="hidden sm:inline">Sort:</span>
+                      <span>{sortOptions.find(o => o.value === sortBy)?.label}</span>
+                      <svg className={cn('w-4 h-4 transition-transform', sortDropdownOpen && 'rotate-180')} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                       </svg>
                     </button>
-
                     {sortDropdownOpen && (
-                      <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-stone-200 py-1 z-50">
+                      <div className="absolute right-0 mt-1 w-48 bg-white border border-stone-200 rounded-lg shadow-lg z-20 py-1">
                         {sortOptions.map((option) => (
                           <button
                             key={option.value}
-                            onClick={() => { setSortBy(option.value); setSortDropdownOpen(false); }}
+                            onClick={() => { setSortBy(option.value as SortOption); setSortDropdownOpen(false); }}
                             className={cn(
-                              'w-full px-4 py-2.5 text-left text-sm transition-colors flex items-center justify-between',
+                              'w-full text-left px-3 py-2 text-sm flex items-center justify-between',
                               sortBy === option.value ? 'bg-amber-50 text-amber-700 font-medium' : 'text-stone-600 hover:bg-stone-50'
                             )}
                           >
@@ -452,83 +436,58 @@ export default function ComicsPage() {
                 </div>
               ) : (
                 <>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {sortedComics.map((comic) => (
+                  {/* Virtualized Grid */}
+                  <div
+                    ref={parentRef}
+                    className="h-[calc(100vh-220px)] overflow-auto"
+                    style={{ contain: 'strict' }}
+                  >
                     <div
-                      key={comic.id}
-                      className="bg-white rounded-xl overflow-hidden border border-stone-100 hover:shadow-lg hover:border-stone-200 transition-all group"
+                      style={{
+                        height: `${rowVirtualizer.getTotalSize()}px`,
+                        width: '100%',
+                        position: 'relative',
+                      }}
                     >
-                      <div className="aspect-[2/3] bg-stone-100 relative overflow-hidden">
-                        {comic.image_url ? (
-                          <img src={comic.image_url} alt={comic.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <svg className="w-12 h-12 text-stone-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                            </svg>
-                          </div>
-                        )}
-                        {comic.badge && (
-                          <span className={cn(
-                            'absolute top-2 left-2 text-xs font-bold px-2 py-1 rounded shadow-sm',
-                            comic.badge === 'New' || comic.badge === 'New Release' || comic.badge === 'New This Week'
-                              ? 'bg-green-500 text-white'
-                              : comic.badge === 'Staff Pick' || comic.badge === 'Recommended'
-                              ? 'bg-purple-500 text-white'
-                              : comic.badge === 'Rare' || comic.badge === 'Limited'
-                              ? 'bg-red-500 text-white'
-                              : comic.badge === 'Sale'
-                              ? 'bg-blue-500 text-white'
-                              : 'bg-amber-500 text-stone-900'
-                          )}>
-                            {comic.badge}
-                          </span>
-                        )}
-                      </div>
-                      <div className="p-3">
-                        <h3 className="font-semibold text-stone-900 text-sm line-clamp-2 mb-1 min-h-[2.5rem]">{comic.name}</h3>
-                        {comic.publisher && <p className="text-xs text-stone-500 mb-2 truncate">{comic.publisher}</p>}
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-stone-900">{formatPrice(comic.base_price)}</span>
-                          <button
-                            onClick={() => handleAddToCart(comic)}
-                            className="bg-stone-900 text-white text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-stone-800 active:scale-95 transition-all"
+                      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                        const startIndex = virtualRow.index * columns;
+                        const rowComics = sortedComics.slice(startIndex, startIndex + columns);
+                        
+                        return (
+                          <div
+                            key={virtualRow.key}
+                            style={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              width: '100%',
+                              height: `${virtualRow.size}px`,
+                              transform: `translateY(${virtualRow.start}px)`,
+                            }}
                           >
-                            Add
-                          </button>
-                        </div>
-                      </div>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4 pb-4">
+                              {rowComics.map((comic) => (
+                                <ComicCard
+                                  key={comic.id}
+                                  comic={comic}
+                                  onAddToCart={handleAddToCart}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ))}
-                </div>
-                
-                {/* Load More trigger / indicator */}
-                <div ref={loadMoreRef} className="py-8 flex justify-center">
-                  {loadingMore && (
-                    <div className="flex items-center gap-3 text-stone-500">
-                      <div className="w-5 h-5 border-2 border-stone-300 border-t-amber-500 rounded-full animate-spin" />
-                      <span>Loading more comics...</span>
-                    </div>
-                  )}
-                  {!loadingMore && hasMore && sortedComics.length > 0 && (
-                    <button
-                      onClick={loadMoreComics}
-                      className="px-6 py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-lg font-medium transition-colors"
-                    >
-                      Load More
-                    </button>
-                  )}
-                  {!hasMore && sortedComics.length > 0 && (
-                    <p className="text-stone-400 text-sm">
-                      Showing all {sortedComics.length} comics
-                    </p>
-                  )}
-                </div>
+                  </div>
+                  
+                  <p className="text-stone-400 text-sm text-center py-4">
+                    Showing all {sortedComics.length} comics
+                  </p>
                 </>
               )}
             </div>
           </div>
-        </div>
+        )}
       </main>
 
       {mobileFilterOpen && (

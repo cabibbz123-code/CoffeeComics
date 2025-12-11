@@ -8,7 +8,14 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: '2023-10-16',
 });
 
-const PLATFORM_FEE_PERCENT = parseFloat(process.env.PLATFORM_FEE_PERCENT || '2.5');
+// Tiered platform fees by product type
+const PLATFORM_FEES = {
+  drink: 0.18,  // 18% on drinks
+  food: 0.18,   // 18% on food
+  comic: 0.10,  // 10% on comics (lower margin product)
+  default: 0.15 // 15% fallback
+};
+
 const TAX_RATE = parseFloat(process.env.TAX_RATE || '0.06');
 
 // Maximum allowed price discrepancy (in dollars) - reject if client price differs more than this
@@ -19,6 +26,7 @@ interface CartItem {
   product: {
     id: string;
     name: string;
+    product_type?: 'drink' | 'food' | 'comic';
   };
   size: {
     name: string;
@@ -47,7 +55,8 @@ interface CheckoutRequest {
 // Verify prices against database - returns server-calculated subtotal or throws
 async function verifyAndCalculatePrices(items: CartItem[]): Promise<{ 
   subtotal: number; 
-  verifiedItems: { productName: string; sizeName: string; unitPrice: number; quantity: number; modifiers: { name: string; price: number }[] }[] 
+  platformFee: number;
+  verifiedItems: { productName: string; productType: string; sizeName: string; unitPrice: number; quantity: number; modifiers: { name: string; price: number }[] }[] 
 }> {
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -64,6 +73,7 @@ async function verifyAndCalculatePrices(items: CartItem[]): Promise<{
       id,
       name,
       base_price,
+      product_type,
       is_active,
       in_stock,
       product_sizes (
@@ -95,6 +105,7 @@ async function verifyAndCalculatePrices(items: CartItem[]): Promise<{
   // Build lookup maps for fast price checking
   const productMap = new Map<string, {
     name: string;
+    productType: string;
     basePrice: number;
     isActive: boolean;
     inStock: boolean;
@@ -119,6 +130,7 @@ async function verifyAndCalculatePrices(items: CartItem[]): Promise<{
 
     productMap.set(product.id, {
       name: product.name,
+      productType: product.product_type || 'food',
       basePrice: product.base_price,
       isActive: product.is_active,
       inStock: product.in_stock,
@@ -129,7 +141,8 @@ async function verifyAndCalculatePrices(items: CartItem[]): Promise<{
 
   // Verify each cart item against database prices
   let serverSubtotal = 0;
-  const verifiedItems: { productName: string; sizeName: string; unitPrice: number; quantity: number; modifiers: { name: string; price: number }[] }[] = [];
+  let totalPlatformFee = 0;
+  const verifiedItems: { productName: string; productType: string; sizeName: string; unitPrice: number; quantity: number; modifiers: { name: string; price: number }[] }[] = [];
 
   for (const item of items) {
     const product = productMap.get(item.product.id);
@@ -191,8 +204,13 @@ async function verifyAndCalculatePrices(items: CartItem[]): Promise<{
     const itemTotal = serverUnitPrice * item.quantity;
     serverSubtotal += itemTotal;
 
+    // Calculate platform fee for this item based on product type
+    const feeRate = PLATFORM_FEES[product.productType as keyof typeof PLATFORM_FEES] || PLATFORM_FEES.default;
+    totalPlatformFee += itemTotal * feeRate;
+
     verifiedItems.push({
       productName: product.name,
+      productType: product.productType,
       sizeName: item.size.name,
       unitPrice: serverUnitPrice,
       quantity: item.quantity,
@@ -200,7 +218,7 @@ async function verifyAndCalculatePrices(items: CartItem[]): Promise<{
     });
   }
 
-  return { subtotal: serverSubtotal, verifiedItems };
+  return { subtotal: serverSubtotal, platformFee: totalPlatformFee, verifiedItems };
 }
 
 export async function POST(request: NextRequest) {
@@ -261,11 +279,13 @@ export async function POST(request: NextRequest) {
 
     // CRITICAL: Verify prices against database and calculate server-side
     let subtotal: number;
-    let verifiedItems: { productName: string; sizeName: string; unitPrice: number; quantity: number; modifiers: { name: string; price: number }[] }[];
+    let platformFee: number;
+    let verifiedItems: { productName: string; productType: string; sizeName: string; unitPrice: number; quantity: number; modifiers: { name: string; price: number }[] }[];
     
     try {
       const result = await verifyAndCalculatePrices(items);
       subtotal = result.subtotal;
+      platformFee = result.platformFee;
       verifiedItems = result.verifiedItems;
     } catch (priceError) {
       console.error('Price verification failed:', priceError);
@@ -289,7 +309,8 @@ export async function POST(request: NextRequest) {
 
     // Convert to cents for Stripe
     const totalCents = Math.round(total * 100);
-    const platformFeeCents = Math.round(totalCents * (PLATFORM_FEE_PERCENT / 100));
+    // Platform fee is calculated per-item based on product type (18% food/drink, 10% comics)
+    const platformFeeCents = Math.round(platformFee * 100);
 
     // Build line items description from VERIFIED items (sanitized)
     const description = verifiedItems
@@ -365,7 +386,7 @@ export async function POST(request: NextRequest) {
       paymentIntentParams.transfer_data = {
         destination: connectedAccountId,
       };
-      console.log('Using Stripe Connect with account:', connectedAccountId);
+      console.log(`Stripe Connect: $${(platformFeeCents/100).toFixed(2)} fee on $${subtotal.toFixed(2)} subtotal (${((platformFeeCents/100)/subtotal*100).toFixed(1)}% effective rate)`);
     } else {
       console.log('Running without Stripe Connect (direct payments)');
     }

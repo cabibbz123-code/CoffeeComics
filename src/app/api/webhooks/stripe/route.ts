@@ -60,8 +60,40 @@ async function handlePaymentSuccess(paymentIntent: Stripe.PaymentIntent) {
   const metadata = paymentIntent.metadata;
   const supabase = getSupabase();
 
-  // Generate order number
-  const orderNumber = `BB-${Date.now().toString(36).toUpperCase()}`;
+  // IDEMPOTENCY CHECK: See if order already exists (client-side usually creates it first)
+  const { data: existingOrder } = await supabase
+    .from('orders')
+    .select('id, order_number')
+    .eq('payment_intent_id', paymentIntent.id)
+    .single();
+
+  if (existingOrder) {
+    console.log(`Order already exists for ${paymentIntent.id}: ${existingOrder.order_number}`);
+    return; // Client-side already created it with items - we're done
+  }
+
+  // Order doesn't exist - client-side creation must have failed
+  // Create order as fallback (but we won't have item details)
+  console.warn(`Creating fallback order for ${paymentIntent.id} - items may be missing`);
+
+  // Generate order number from payment intent for consistency
+  const orderNumber = `BB-${paymentIntent.id.slice(-8).toUpperCase()}`;
+
+  // Parse items from metadata if available (added in checkout)
+  let orderItems: { productName: string; sizeName: string; quantity: number; unitPrice: number; modifiers: any[] }[] = [];
+  if (metadata.items_json) {
+    try {
+      const parsed = JSON.parse(metadata.items_json);
+      // Check if items were truncated
+      if (parsed.truncated) {
+        console.warn(`Items were truncated in metadata for ${paymentIntent.id}, count: ${parsed.count}`);
+      } else if (Array.isArray(parsed)) {
+        orderItems = parsed;
+      }
+    } catch (e) {
+      console.error('Failed to parse items from metadata:', e);
+    }
+  }
 
   // Create order in database
   const { data: order, error: orderError } = await supabase
@@ -87,7 +119,30 @@ async function handlePaymentSuccess(paymentIntent: Stripe.PaymentIntent) {
     throw orderError;
   }
 
-  console.log(`Order created: ${orderNumber} (${paymentIntent.id})`);
+  // Create order items if we have them from metadata
+  if (orderItems.length > 0 && order) {
+    const itemsToInsert = orderItems.map(item => ({
+      order_id: order.id,
+      product_name: item.productName,
+      size_name: item.sizeName || null,
+      quantity: item.quantity,
+      unit_price: item.unitPrice,
+      modifiers: item.modifiers || [],
+    }));
+
+    const { error: itemsError } = await supabase
+      .from('order_items')
+      .insert(itemsToInsert);
+
+    if (itemsError) {
+      console.error('Failed to create order items from webhook:', itemsError);
+      // Don't throw - order is created, items are secondary
+    } else {
+      console.log(`Created ${orderItems.length} order items from webhook metadata`);
+    }
+  }
+
+  console.log(`Fallback order created: ${orderNumber} (${paymentIntent.id})`);
 
   // TODO: Send confirmation email
   // TODO: Send notification to store (e.g., via Slack, SMS, or dashboard)

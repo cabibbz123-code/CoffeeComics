@@ -1,188 +1,154 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
-import { checkRateLimit, getClientIP, RATE_LIMITS, rateLimitResponse } from '@/lib/rate-limit';
-import { sanitizeString, isValidEmail, isValidAmount, validateCustomer } from '@/lib/security';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: '2023-10-16',
 });
 
-const PLATFORM_FEE_PERCENT = parseFloat(process.env.PLATFORM_FEE_PERCENT || '2.5');
-const TAX_RATE = parseFloat(process.env.TAX_RATE || '0.06');
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
 
-interface CartItem {
-  id: string;
-  product: {
-    id: string;
-    name: string;
-  };
-  size: {
-    name: string;
-    price: number;
-  };
-  modifiers: {
-    name: string;
-    price: number;
-  }[];
-  quantity: number;
-  unitPrice: number;
-  totalPrice: number;
-}
-
-interface CheckoutRequest {
-  items: CartItem[];
-  customer: {
-    name: string;
-    email: string;
-    phone?: string;
-  };
-  instructions?: string;
+// Create Supabase admin client lazily
+function getSupabase(): SupabaseClient {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
 }
 
 export async function POST(request: NextRequest) {
+  const body = await request.text();
+  const signature = request.headers.get('stripe-signature')!;
+
+  let event: Stripe.Event;
+
   try {
-    // Rate limiting
-    const clientIP = getClientIP(request);
-    const rateLimitResult = checkRateLimit(`checkout:${clientIP}`, RATE_LIMITS.checkout);
-    
-    if (!rateLimitResult.success) {
-      console.warn(`Rate limit exceeded for checkout: ${clientIP}`);
-      return rateLimitResponse(rateLimitResult);
-    }
-
-    const body: CheckoutRequest = await request.json();
-    const { items, customer, instructions } = body;
-
-    // Validate items exist
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return NextResponse.json(
-        { error: 'Cart is empty' },
-        { status: 400 }
-      );
-    }
-
-    // Limit items count
-    if (items.length > 50) {
-      return NextResponse.json(
-        { error: 'Too many items in cart' },
-        { status: 400 }
-      );
-    }
-
-    // Validate customer
-    const customerValidation = validateCustomer(customer);
-    if (!customerValidation.valid) {
-      return NextResponse.json(
-        { error: customerValidation.error },
-        { status: 400 }
-      );
-    }
-
-    // Validate each item and recalculate prices server-side
-    let calculatedSubtotal = 0;
-    for (const item of items) {
-      if (!item.quantity || item.quantity < 1 || item.quantity > 99) {
-        return NextResponse.json(
-          { error: 'Invalid item quantity' },
-          { status: 400 }
-        );
-      }
-      
-      if (!isValidAmount(item.unitPrice) || !isValidAmount(item.totalPrice)) {
-        return NextResponse.json(
-          { error: 'Invalid item price' },
-          { status: 400 }
-        );
-      }
-      
-      // Recalculate to prevent price manipulation
-      const itemTotal = item.unitPrice * item.quantity;
-      if (Math.abs(itemTotal - item.totalPrice) > 0.01) {
-        console.warn(`Price mismatch detected: expected ${itemTotal}, got ${item.totalPrice}`);
-      }
-      calculatedSubtotal += itemTotal;
-    }
-
-    // Use server-calculated total
-    const subtotal = calculatedSubtotal;
-    const tax = subtotal * TAX_RATE;
-    const total = subtotal + tax;
-
-    // Sanity check on total
-    if (total < 0.50 || total > 10000) {
-      return NextResponse.json(
-        { error: 'Order total out of acceptable range' },
-        { status: 400 }
-      );
-    }
-
-    // Convert to cents for Stripe
-    const totalCents = Math.round(total * 100);
-    const platformFeeCents = Math.round(totalCents * (PLATFORM_FEE_PERCENT / 100));
-
-    // Build line items description (sanitized)
-    const description = items
-      .map((item) => {
-        let desc = `${item.quantity}x ${sanitizeString(item.product.name, 50)}`;
-        if (item.size.name !== 'Regular' && item.size.name !== 'Standard') {
-          desc += ` (${sanitizeString(item.size.name, 20)})`;
-        }
-        if (item.modifiers.length > 0) {
-          desc += ` - ${item.modifiers.map((m) => sanitizeString(m.name, 20)).join(', ')}`;
-        }
-        return desc;
-      })
-      .join('; ')
-      .slice(0, 500); // Stripe description limit
-
-    const validatedCustomer = customerValidation.customer!;
-
-    // Create PaymentIntent
-    const paymentIntentParams: Stripe.PaymentIntentCreateParams = {
-      amount: totalCents,
-      currency: 'usd',
-      automatic_payment_methods: { enabled: true },
-      description: `Blackbird order: ${description}`,
-      metadata: {
-        customer_name: validatedCustomer.name,
-        customer_email: validatedCustomer.email,
-        customer_phone: validatedCustomer.phone || '',
-        instructions: sanitizeString(instructions || '', 500),
-        item_count: items.length.toString(),
-        subtotal: subtotal.toFixed(2),
-        tax: tax.toFixed(2),
-        total: total.toFixed(2),
-        platform_fee: (platformFeeCents / 100).toFixed(2),
-      },
-      receipt_email: validatedCustomer.email,
-    };
-
-    // Only add Stripe Connect if we have a valid connected account ID
-    const connectedAccountId = process.env.STRIPE_CONNECTED_ACCOUNT_ID;
-    if (connectedAccountId && connectedAccountId.startsWith('acct_') && connectedAccountId.length > 10) {
-      paymentIntentParams.application_fee_amount = platformFeeCents;
-      paymentIntentParams.transfer_data = {
-        destination: connectedAccountId,
-      };
-      console.log('Using Stripe Connect with account:', connectedAccountId);
-    } else {
-      console.log('Running without Stripe Connect (direct payments)');
-    }
-
-    const paymentIntent = await stripe.paymentIntents.create(paymentIntentParams);
-
-    return NextResponse.json({
-      clientSecret: paymentIntent.client_secret,
-      paymentIntentId: paymentIntent.id,
-      amount: total,
-    });
+    event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
   } catch (error) {
-    console.error('Checkout error:', error);
-    
-    // Don't expose internal error details
+    console.error('Webhook signature verification failed:', error);
     return NextResponse.json(
-      { error: 'Failed to process checkout. Please try again.' },
+      { error: 'Invalid signature' },
+      { status: 400 }
+    );
+  }
+
+  try {
+    switch (event.type) {
+      case 'payment_intent.succeeded':
+        await handlePaymentSuccess(event.data.object as Stripe.PaymentIntent);
+        break;
+
+      case 'payment_intent.payment_failed':
+        await handlePaymentFailure(event.data.object as Stripe.PaymentIntent);
+        break;
+
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
+    }
+
+    return NextResponse.json({ received: true });
+  } catch (error) {
+    console.error('Webhook handler error:', error);
+    return NextResponse.json(
+      { error: 'Webhook handler failed' },
       { status: 500 }
     );
   }
+}
+
+async function handlePaymentSuccess(paymentIntent: Stripe.PaymentIntent) {
+  const metadata = paymentIntent.metadata;
+  const supabase = getSupabase();
+
+  // IDEMPOTENCY CHECK: See if order already exists (client-side usually creates it first)
+  const { data: existingOrder } = await supabase
+    .from('orders')
+    .select('id, order_number')
+    .eq('payment_intent_id', paymentIntent.id)
+    .single();
+
+  if (existingOrder) {
+    console.log(`Order already exists for ${paymentIntent.id}: ${existingOrder.order_number}`);
+    return; // Client-side already created it with items - we're done
+  }
+
+  // Order doesn't exist - client-side creation must have failed
+  // Create order as fallback (but we won't have item details)
+  console.warn(`Creating fallback order for ${paymentIntent.id} - items may be missing`);
+
+  // Generate order number from payment intent for consistency
+  const orderNumber = `BB-${paymentIntent.id.slice(-8).toUpperCase()}`;
+
+  // Parse items from metadata if available (added in checkout)
+  let orderItems: { productName: string; sizeName: string; quantity: number; unitPrice: number; modifiers: any[] }[] = [];
+  if (metadata.items_json) {
+    try {
+      const parsed = JSON.parse(metadata.items_json);
+      // Check if items were truncated
+      if (parsed.truncated) {
+        console.warn(`Items were truncated in metadata for ${paymentIntent.id}, count: ${parsed.count}`);
+      } else if (Array.isArray(parsed)) {
+        orderItems = parsed;
+      }
+    } catch (e) {
+      console.error('Failed to parse items from metadata:', e);
+    }
+  }
+
+  // Create order in database
+  const { data: order, error: orderError } = await supabase
+    .from('orders')
+    .insert({
+      order_number: orderNumber,
+      customer_name: metadata.customer_name,
+      customer_email: metadata.customer_email,
+      customer_phone: metadata.customer_phone || null,
+      subtotal: parseFloat(metadata.subtotal),
+      tax: parseFloat(metadata.tax),
+      total: parseFloat(metadata.total),
+      status: 'pending',
+      payment_status: 'paid',
+      payment_intent_id: paymentIntent.id,
+      special_instructions: metadata.instructions || null,
+    })
+    .select()
+    .single();
+
+  if (orderError) {
+    console.error('Failed to create order:', orderError);
+    throw orderError;
+  }
+
+  // Create order items if we have them from metadata
+  if (orderItems.length > 0 && order) {
+    const itemsToInsert = orderItems.map(item => ({
+      order_id: order.id,
+      product_name: item.productName,
+      size_name: item.sizeName || null,
+      quantity: item.quantity,
+      unit_price: item.unitPrice,
+      modifiers: item.modifiers || [],
+    }));
+
+    const { error: itemsError } = await supabase
+      .from('order_items')
+      .insert(itemsToInsert);
+
+    if (itemsError) {
+      console.error('Failed to create order items from webhook:', itemsError);
+      // Don't throw - order is created, items are secondary
+    } else {
+      console.log(`Created ${orderItems.length} order items from webhook metadata`);
+    }
+  }
+
+  console.log(`Fallback order created: ${orderNumber} (${paymentIntent.id})`);
+
+  // TODO: Send confirmation email
+  // TODO: Send notification to store (e.g., via Slack, SMS, or dashboard)
+}
+
+async function handlePaymentFailure(paymentIntent: Stripe.PaymentIntent) {
+  console.log(`Payment failed: ${paymentIntent.id}`);
+  // Could log this or notify someone
 }

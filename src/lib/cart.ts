@@ -31,6 +31,13 @@ interface CartStore {
 
 const TAX_RATE = 0.06; // Michigan 6%
 
+// Helper to create a unique key for cart item comparison
+// Two items are "identical" if they have the same product, size, and modifiers
+function getItemKey(productId: string, sizeName: string, modifiers: Modifier[]): string {
+  const modifierNames = modifiers.map(m => m.name).sort().join('|');
+  return `${productId}::${sizeName}::${modifierNames}`;
+}
+
 export const useCartStore = create<CartStore>()(
   persist(
     (set, get) => ({
@@ -40,20 +47,49 @@ export const useCartStore = create<CartStore>()(
         const modifiersPrice = modifiers.reduce((sum, m) => sum + m.price, 0);
         const unitPrice = size.price + modifiersPrice;
         
-        const newItem: CartItem = {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          product,
-          size,
-          modifiers,
-          quantity,
-          unitPrice,
-          totalPrice: unitPrice * quantity,
-          notes,
-        };
+        // Generate key for this item configuration
+        const itemKey = getItemKey(product.id, size.name, modifiers);
+        
+        // Check if an identical item already exists in cart
+        const existingItem = get().items.find(item => 
+          getItemKey(item.product.id, item.size.name, item.modifiers) === itemKey
+        );
 
-        set((state) => ({
-          items: [...state.items, newItem],
-        }));
+        if (existingItem) {
+          // Item exists - increment quantity instead of adding duplicate
+          const newQuantity = existingItem.quantity + quantity;
+          set((state) => ({
+            items: state.items.map((item) =>
+              item.id === existingItem.id
+                ? { 
+                    ...item, 
+                    quantity: newQuantity, 
+                    totalPrice: item.unitPrice * newQuantity,
+                    // Append notes if both have them
+                    notes: item.notes && notes 
+                      ? `${item.notes}; ${notes}` 
+                      : item.notes || notes
+                  }
+                : item
+            ),
+          }));
+        } else {
+          // New item - add to cart
+          const newItem: CartItem = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            product,
+            size,
+            modifiers,
+            quantity,
+            unitPrice,
+            totalPrice: unitPrice * quantity,
+            notes,
+          };
+
+          set((state) => ({
+            items: [...state.items, newItem],
+          }));
+        }
       },
 
       removeItem: (id) => {
@@ -82,7 +118,8 @@ export const useCartStore = create<CartStore>()(
       },
 
       getItemCount: () => {
-        return get().items.length;
+        // Return total quantity of all items, not just number of line items
+        return get().items.reduce((sum, item) => sum + item.quantity, 0);
       },
 
       getSubtotal: () => {

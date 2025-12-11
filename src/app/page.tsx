@@ -108,7 +108,7 @@ export default function Home() {
 
       {/* Features Row */}
       <section className="py-16 px-6 border-t border-stone-800/50">
-        <div className="max-w-6xl mx-auto grid grid-cols-2 md:grid-cols-4 gap-8">
+        <div className="max-w-5xl mx-auto grid grid-cols-2 md:grid-cols-4 gap-12">
           <div className="text-center">
             <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-amber-500/10 flex items-center justify-center">
               <CoffeeIcon className="w-6 h-6 text-amber-400" />
@@ -120,7 +120,7 @@ export default function Home() {
             <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-amber-500/10 flex items-center justify-center">
               <ComicIcon className="w-6 h-6 text-amber-400" />
             </div>
-            <h4 className="text-amber-50 font-medium mb-1">900+ Comics</h4>
+            <h4 className="text-amber-50 font-medium mb-1">Comics</h4>
             <p className="text-stone-500 text-sm">New & back issues</p>
           </div>
           <div className="text-center">
@@ -132,10 +132,10 @@ export default function Home() {
           </div>
           <div className="text-center">
             <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-amber-500/10 flex items-center justify-center">
-              <VinylIcon className="w-6 h-6 text-amber-400" />
+              <TrophyIcon className="w-6 h-6 text-amber-400" />
             </div>
-            <h4 className="text-amber-50 font-medium mb-1">Vinyl & More</h4>
-            <p className="text-stone-500 text-sm">Curated collection</p>
+            <h4 className="text-amber-50 font-medium mb-1">Award Winning</h4>
+            <p className="text-stone-500 text-sm">Eisner Spirit Award</p>
           </div>
         </div>
       </section>
@@ -201,6 +201,14 @@ function VinylIcon({ className }: { className?: string }) {
       <circle cx="12" cy="12" r="10" strokeWidth={1.5} />
       <circle cx="12" cy="12" r="3" strokeWidth={1.5} />
       <circle cx="12" cy="12" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function TrophyIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 3h14M5 3v4a7 7 0 007 7m-7-7H3m16 0h-2m2 0v4a7 7 0 01-7 7m0 0v4m0 0H8m4 0h4" />
     </svg>
   );
 }

@@ -55,7 +55,7 @@ async function verifyAndCalculatePrices(items: CartItem[]): Promise<{
   );
 
   // Get all unique product IDs from cart
-  const productIds = [...new Set(items.map(item => item.product.id))];
+  const productIds = Array.from(new Set(items.map(item => item.product.id)));
   
   // Fetch products with their sizes and modifier groups
   const { data: products, error: productsError } = await supabase

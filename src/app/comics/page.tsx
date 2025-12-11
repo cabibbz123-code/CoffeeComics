@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Header } from '@/components/Header';
 import { Footer } from '@/components/Footer';
 import { CartDrawer } from '@/components/CartDrawer';
@@ -8,7 +8,6 @@ import { useCartStore } from '@/lib/cart';
 import { getSupabase } from '@/lib/supabase';
 import { formatPrice, cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { useVirtualizer } from '@tanstack/react-virtual';
 
 interface Comic {
   id: string;
@@ -185,8 +184,9 @@ export default function ComicsPage() {
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
   const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
   const [publisherSearch, setPublisherSearch] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const ITEMS_PER_PAGE = 48;
   const sortDropdownRef = useRef<HTMLDivElement>(null);
-  const parentRef = useRef<HTMLDivElement>(null);
   
   const addItem = useCartStore((s) => s.addItem);
   const cartItems = useCartStore((s) => s.items);
@@ -262,31 +262,20 @@ export default function ComicsPage() {
     }
   });
 
-  // Determine number of columns based on container width
-  const [columns, setColumns] = useState(4);
-  
-  useEffect(() => {
-    const updateColumns = () => {
-      const width = parentRef.current?.offsetWidth || window.innerWidth;
-      if (width < 640) setColumns(2);
-      else if (width < 1280) setColumns(3);
-      else setColumns(4);
-    };
-    
-    updateColumns();
-    window.addEventListener('resize', updateColumns);
-    return () => window.removeEventListener('resize', updateColumns);
-  }, []);
+  // Pagination
+  const totalPages = Math.ceil(sortedComics.length / ITEMS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+  const paginatedComics = sortedComics.slice(startIndex, startIndex + ITEMS_PER_PAGE);
 
-  // Calculate rows for virtualizer
-  const rowCount = Math.ceil(sortedComics.length / columns);
-  
-  const rowVirtualizer = useVirtualizer({
-    count: rowCount,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 380, // Estimated row height
-    overscan: 3, // Render 3 extra rows above/below viewport
-  });
+  // Reset to page 1 when filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filter, sortBy]);
+
+  const handlePageChange = (page: number) => {
+    setCurrentPage(page);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const handleAddToCart = (comic: Comic) => {
     addItem(
@@ -436,52 +425,96 @@ export default function ComicsPage() {
                 </div>
               ) : (
                 <>
-                  {/* Virtualized Grid */}
-                  <div
-                    ref={parentRef}
-                    className="h-[calc(100vh-220px)] overflow-auto"
-                    style={{ contain: 'strict' }}
-                  >
-                    <div
-                      style={{
-                        height: `${rowVirtualizer.getTotalSize()}px`,
-                        width: '100%',
-                        position: 'relative',
-                      }}
-                    >
-                      {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                        const startIndex = virtualRow.index * columns;
-                        const rowComics = sortedComics.slice(startIndex, startIndex + columns);
-                        
-                        return (
-                          <div
-                            key={virtualRow.key}
-                            style={{
-                              position: 'absolute',
-                              top: 0,
-                              left: 0,
-                              width: '100%',
-                              height: `${virtualRow.size}px`,
-                              transform: `translateY(${virtualRow.start}px)`,
-                            }}
-                          >
-                            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4 pb-4">
-                              {rowComics.map((comic) => (
-                                <ComicCard
-                                  key={comic.id}
-                                  comic={comic}
-                                  onAddToCart={handleAddToCart}
-                                />
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                  {/* Comics Grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-4">
+                    {paginatedComics.map((comic) => (
+                      <ComicCard
+                        key={comic.id}
+                        comic={comic}
+                        onAddToCart={handleAddToCart}
+                      />
+                    ))}
                   </div>
                   
-                  <p className="text-stone-400 text-sm text-center py-4">
-                    Showing all {sortedComics.length} comics
+                  {/* Pagination */}
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-center gap-2 py-8">
+                      <button
+                        onClick={() => handlePageChange(currentPage - 1)}
+                        disabled={currentPage === 1}
+                        className={cn(
+                          'px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+                          currentPage === 1
+                            ? 'bg-stone-100 text-stone-400 cursor-not-allowed'
+                            : 'bg-white border border-stone-200 text-stone-700 hover:bg-stone-50'
+                        )}
+                      >
+                        Previous
+                      </button>
+                      
+                      <div className="flex items-center gap-1">
+                        {/* First page */}
+                        {currentPage > 3 && (
+                          <>
+                            <button
+                              onClick={() => handlePageChange(1)}
+                              className="w-10 h-10 rounded-lg text-sm font-medium bg-white border border-stone-200 text-stone-700 hover:bg-stone-50"
+                            >
+                              1
+                            </button>
+                            {currentPage > 4 && <span className="px-2 text-stone-400">...</span>}
+                          </>
+                        )}
+                        
+                        {/* Page numbers around current */}
+                        {Array.from({ length: totalPages }, (_, i) => i + 1)
+                          .filter(page => page >= currentPage - 2 && page <= currentPage + 2)
+                          .map(page => (
+                            <button
+                              key={page}
+                              onClick={() => handlePageChange(page)}
+                              className={cn(
+                                'w-10 h-10 rounded-lg text-sm font-medium transition-colors',
+                                page === currentPage
+                                  ? 'bg-amber-500 text-white'
+                                  : 'bg-white border border-stone-200 text-stone-700 hover:bg-stone-50'
+                              )}
+                            >
+                              {page}
+                            </button>
+                          ))}
+                        
+                        {/* Last page */}
+                        {currentPage < totalPages - 2 && (
+                          <>
+                            {currentPage < totalPages - 3 && <span className="px-2 text-stone-400">...</span>}
+                            <button
+                              onClick={() => handlePageChange(totalPages)}
+                              className="w-10 h-10 rounded-lg text-sm font-medium bg-white border border-stone-200 text-stone-700 hover:bg-stone-50"
+                            >
+                              {totalPages}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                      
+                      <button
+                        onClick={() => handlePageChange(currentPage + 1)}
+                        disabled={currentPage === totalPages}
+                        className={cn(
+                          'px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+                          currentPage === totalPages
+                            ? 'bg-stone-100 text-stone-400 cursor-not-allowed'
+                            : 'bg-white border border-stone-200 text-stone-700 hover:bg-stone-50'
+                        )}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                  
+                  <p className="text-stone-400 text-sm text-center pb-4">
+                    Showing {startIndex + 1}-{Math.min(startIndex + ITEMS_PER_PAGE, sortedComics.length)} of {sortedComics.length} comics
                   </p>
                 </>
               )}
